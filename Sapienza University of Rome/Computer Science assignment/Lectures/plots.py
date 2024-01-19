@@ -1,0 +1,10 @@
+import matplotlib.pyplot as plt
+plt.title('Myplot')
+plt.plot([1,2,3,4], label = 'plot1')
+plt.plot([2,2,3,4], label = 'plot1')
+plt.xlim(-1,5)
+plt.ylim(0,3)
+plt.text(1.8, 2, 'u can show text in every position in graph')
+plt.annotate('check this point', xy=(1,2), xytext=(2,0.5), arrowprops = dict(facecolor ='black'))
+plt.savefig('graph')
+plt.show()
