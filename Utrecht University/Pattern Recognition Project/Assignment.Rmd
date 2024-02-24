@@ -1,0 +1,388 @@
+---
+title: "Assignment"
+author: "Nicola Greco"
+date: "2023-11-28"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+### - LIBRARY AND FUNCTIONS -
+
+```{r, include=FALSE}
+library(tidyverse)
+library(magrittr)
+library(nnet)
+library(caret)
+library(umap)
+library(glmnet)
+# Function to display an image from row data
+show_row <- function(row) {
+  OpenImageR::imageShow(matrix(as.numeric(row[-1]), nrow = 28, ncol = 28, byrow = TRUE))
+}
+getMaxClass <- function(pred_probs) {
+  max_class <- apply(pred_probs, 1, which.max)
+  max_class <- max_class -1
+  return(max_class)
+}
+# load("C:/Users/nicco/OneDrive/Documenti/Study/Utrecht/Deep/Assignment/enviroment.svm.RData")
+```
+
+### - QUESTION 1 -
+
+```{r read_data}
+# Read the dataset
+mnist.dat <- read.csv("mnist.csv")
+```
+
+#### - SUMMARY STATISTIC AND USELESS PIXEL -
+
+```{r summary_stat, include=FALSE}
+# Compute summary statistics for each column
+summary.stat <- sapply(mnist.dat, summary) %>% t()
+
+cat("Example of summary statistics: ", "\n")
+print(summary.stat[95:100,])
+cat("\n")
+
+# Check for useless pixels by identifying columns where min and max are the same
+useless.pixel <- (summary.stat[,1] == summary.stat[,6])
+
+cat("Example of useless pixel: ", "\n")
+print(summary.stat[95:100,])
+cat("\n")
+
+# sum(useless.pixel)
+# There are 76 pixels found with identical min and max values.
+
+# Extract names of identified useless pixels
+useless.pixel.name <- names(useless.pixel[useless.pixel])
+cat("SOme useless pixel: ", "\n")
+print(useless.pixel.name[1:5])
+cat("\n")
+```
+
+#### - CLASS DISTRIBUTION -
+
+METTICE I GRAFICI DEGLI ALTRI
+
+```{r class_distribution}
+# Convert the label column to a factor
+mnist.dat$label <- as.factor(mnist.dat$label) 
+
+# Calculate class distribution
+class_distribution <- table(mnist.dat$label)
+
+# Identify the most frequent class
+accuracy_predicting_major <- class_distribution["1"] / sum(class_distribution) * 100
+```
+
+Conclusions for Question 1:
+
+-   The code performs exploratory analysis on the dataset, identifying 76 pixels with identical minimum and maximum values, indicating potential uselessness for classification.
+-   The class distribution analysis shows that predicting the majority class (class 1) would achieve an accuracy of `accuracy_predicting_major` percent.
+
+### - QUESTION 2 -
+
+```{r ink_column, include=FALSE}
+# Create a new column 'ink' representing the amount of ink in each digit
+mnist.dat.ink <- mnist.dat
+mnist.dat.ink$ink <- apply(mnist.dat.ink, 1, function(row) sum(as.integer(row[-1])))
+```
+
+#### - INK COLUMN -
+
+```{r ink_summary}
+# Calculate ink statistics per label (mean and standard deviation)
+nested.mean <- mnist.dat.ink %>% group_by(label) %>% select(ink) %>% summarise_all(mean) %>% rename(mean.ink = ink)
+nested.sd <- mnist.dat.ink %>% group_by(label) %>% select(ink) %>% summarise_all(sd) %>% rename(sd.ink = ink)
+ink.stat.per.label <- merge(nested.mean, nested.sd, by = "label")
+
+
+cat("Statistics on Ink features per label: ", "\n")
+print(ink.stat.per.label)
+cat("\n")
+
+# Merge ink statistics back to the dataset
+mnist.dat.ink %<>% left_join(nested.mean, by = "label") %>% left_join(nested.sd, by = "label")
+
+# Display a few rows with ink data and corresponding images
+# head(mnist.dat.ink[, c(1, 786, 787, 788)])
+# show_row(mnist.dat.ink[5, ])
+# show_row(mnist.dat.ink[6, ])
+```
+
+#### - MODEL FITTING - Part 1: Training the Model on the Whole Dataset -
+
+```{r model_training_whole_dataset, include=FALSE}
+# Scale the 'ink' column
+mnist.dat.ink$ink.scaled <- scale(mnist.dat.ink$ink)
+```
+
+```{r model_training_whole_dataset}
+# Fit multinomial logistic regression model using only 'ink' feature on the whole dataset
+multi.logit.ink.only <- multinom(label ~ ink.scaled, data = mnist.dat.ink)
+print(multi.logit.ink.only)
+```
+
+#### - MODEL FITTING - Part 2: Testing the Model on the Whole Dataset -
+
+```{r model_testing_whole_dataset, include=FALSE}
+# Predict using the trained model on the whole dataset
+predictions.whole.data <- predict(multi.logit.ink.only, newdata = mnist.dat.ink)
+
+# Calculate confusion matrix and evaluate performance using confusionMatrix()
+conf_matrix_whole_data <- confusionMatrix(data = predictions.whole.data, reference = mnist.dat.ink$label)
+print(conf_matrix_whole_data)
+```
+
+#### - MODEL FITTING - Part 3: Testing the Model on Specific Class Pairs -
+
+```{r model_testing_specific_classes, include=FALSE}
+# Define class pairs
+class_pairs <- list(c(1, 8), c(4, 0), c(3, 8),  c(9,4))
+
+# Initialize an empty list to store confusion matrices
+conf_matrices <- list()
+
+# Loop through each class pair
+for (i in seq_along(class_pairs)) {
+  
+  print(paste("Pair of digits:", str_flatten(class_pairs[[i]], collapse = " - ")))
+  
+  # Create a dataset for the pair of digits
+  two.digits.dataset <- mnist.dat.ink[mnist.dat.ink$label %in% class_pairs[[i]], ]
+  two.digits.dataset$label <- as.factor(as.character(two.digits.dataset$label))
+  
+  # Fit model for specific class pair
+  model <- multinom(label ~ ink.scaled, data = two.digits.dataset)
+  
+  # Make predictions for the specific class pair
+  predictions <- predict(model, newdata = two.digits.dataset)
+  
+  # Calculate confusion matrix for the specific class pair using confusionMatrix()
+  conf_matrices[[i]] <- confusionMatrix(data = predictions, reference = two.digits.dataset$label)
+  
+  # Print confusion matrix for the specific class pair and its accuracy
+  print(conf_matrices[[i]][c("table")])
+  print(paste("Accuracy:", unlist(conf_matrices[[i]]["overall"])[1]))
+  print("-----------------------------------------------")
+}
+```
+
+#### - MODEL FITTING - Part 4: Calculating Overall Accuracy of the Model -
+
+```{r overall_model_accuracy, include=FALSE}
+# Calculate overall accuracy for the model on the complete dataset
+predictions.prob <- predict(multi.logit.ink.only, newdata = mnist.dat.ink, type = "probs") %>% as.data.frame()
+predictions.prob$label <- mnist.dat.ink[, "label"]
+
+print(predictions.prob[1:10,])
+
+```
+
+Conclusions for Question 2:
+
+-   The code derives an 'ink' feature and computes statistics per label.
+-   It fits a multinomial logistic regression model using only the 'ink' feature, evaluates it on the whole dataset and specific class pairs using `confusionMatrix()`, and calculates the overall accuracy of the model.
+
+### - QUESTION 3-4 -
+
+Plot the two pc
+
+```{r feature_extraction}
+# Retain non-useless pixels from the dataset
+features <- mnist.dat[, !useless.pixel]
+
+# Perform Principal Component Analysis (PCA) on the selected features
+pca_result <- prcomp(features[, -1], center = TRUE, scale. = TRUE)
+
+# Projecting data onto the first and second principal components
+projection_1pc <- as.vector(as.matrix(features[, -1]) %*% pca_result$rotation[, 1])
+# projection_2pc <- as.vector(as.matrix(features[, -1]) %*% pca_result$rotation[, 2])
+
+# Add PCA-projection results as new features to the dataset
+mnist.dat.ink <- cbind(mnist.dat.ink, PC1_Projection = projection_1pc)
+# mnist.dat.ink <- cbind(mnist.dat.ink, PC2_Projection = projection_2pc)
+
+ggplot(mnist.dat.ink, aes(x=ink, y=PC1_Projection, color = label)) +
+  geom_point(size=2, shape=23)
+
+# Display the structure of the modified dataset
+str(mnist.dat.ink[, c(1, 2, 785:789)])
+table(mnist.dat.ink$label)
+```
+
+#### - MODEL FITTING USING PRINCIPAL COMPONENTS -
+
+```{r model_fitting_with_pca}
+# Fit multinomial logistic regression models using the first and second principal components
+multi.logit.ink.PC1 <- multinom(label ~ ink.scaled + PC1_Projection, data = mnist.dat.ink)
+# multi.logit.ink.PC2 <- multinom(label ~ ink.scaled + PC2_Projection, data = mnist.dat.ink)
+
+# Predictions using models fitted with principal components
+predictions.whole.data.PC1 <- predict(multi.logit.ink.PC1, newdata = mnist.dat.ink)
+```
+
+#### - MODEL PERFORMANCE EVALUATION -
+
+```{r model_performance_evaluation}
+# Evaluate model performance using confusionMatrix() for models using PCA
+conf_matrix_PCA_1 <- confusionMatrix(data = predictions.whole.data.PC1, reference = mnist.dat.ink$label)
+conf_matrix_PCA_1
+```
+
+#### - MODEL FITTING USING UMAP -
+
+```{r model_fitting_with_umap}
+# Compute UMAP projection
+# umap_projection <- umap(d = as.matrix(features[, -1]), n_components = 1)
+# save(umap_projection, file = "umap_projection.RData")
+load("umap_projection.RData")
+
+# Add UMAP projection as an additional feature to your dataset
+mnist.dat.ink$UMAP_Projection <- umap_projection$layout[, 1]
+```
+
+```{r model_fitting_with_umap}
+# Fit multinomial logistic regression models using the first and second principal components
+multi.logit.ink.UMAP <- multinom(label ~ ink.scaled + UMAP_Projection, data = mnist.dat.ink)
+
+# Predictions using models fitted with principal components
+predictions.whole.data.UMAP <- predict(multi.logit.ink.UMAP, newdata = mnist.dat.ink)
+```
+
+#### - MODEL PERFORMANCE EVALUATION -
+
+```{r model_performance_evaluation}
+# Evaluate model performance using confusionMatrix() for models using PCA
+conf_matrix_UMAP <- confusionMatrix(data = predictions.whole.data.UMAP, reference = mnist.dat.ink$label)
+conf_matrix_UMAP
+
+```
+
+Conclusions for Question 3-4:
+
+-   The code utilized Principal Component Analysis (PCA) to create new features from the dataset.
+-   Multinomial logistic regression models were built using the derived principal components, enhancing the feature space.
+-   Model performance was assessed using `confusionMatrix()` to gauge classification accuracy and explore potential improvements over previous models using the 'ink' feature alone.
+
+### - QUESTION 5 -
+
+```{r data_preparation}
+# Set seed and split data into training and testing sets
+set.seed(1234)
+train.mnist.dat <- mnist.dat %>% sample_n(5000)
+test.mnist.dat <- mnist.dat %>% anti_join(train.mnist.dat)
+```
+
+#### - MULTI LOGIT ON ALL PIXEL -
+
+```{r multi_logit_all_pixel}
+# Extract response variable and predictors for all pixels
+response.all.pixel <- as.integer(as.character(train.mnist.dat[, 1]))
+predictors.all.pixel <- as.matrix(train.mnist.dat[, -1])
+
+# Cross-validation for regularized multinomial logistic regression on all pixels
+cv.multi.logit.all.pixel <- cv.glmnet(x = predictors.all.pixel, y = response.all.pixel, 
+                                      family = "multinomial", nfolds = 10, alpha = 1)
+plot(cv.multi.logit.all.pixel)
+
+# Fit model and make predictions on the test data
+# multi.logit.all.pixel <- coef(cv.multi.logit.all.pixel, s = "lambda.min")
+predictions.logit.all.pixel.test <- predict(cv.multi.logit.all.pixel, 
+                                            newx = as.matrix(test.mnist.dat[, -1]), s = "lambda.min", type = "response") %>% 
+                                                as.data.frame()
+
+# Rename columns and compute predictions
+names(predictions.logit.all.pixel.test) <- sub("\\..*", "", names(predictions.logit.all.pixel.test))
+predictions.logit.all.pixel.test$prediction <- as.factor(getMaxClass(predictions.logit.all.pixel.test[, 1:10]))
+
+# Evaluate model performance using confusionMatrix()
+confusionMatrix(data = predictions.logit.all.pixel.test$prediction, reference = test.mnist.dat$label)
+```
+
+#### - MULTI LOGIT ON NON-ZERO VARIANCE PIXEL ONLY-
+
+```{r multi_logit_non_zero_variance_pixel}
+# Extract response variable and predictors for non-zero variance pixels
+response.some.pixel <- as.integer(as.character(train.mnist.dat[, 1]))
+predictors.some.pixel <- train.mnist.dat[, !useless.pixel] %>% select(-label) %>% as.matrix()
+test.some.pixel <- test.mnist.dat[, !useless.pixel] %>% select(-label) %>% as.matrix()
+
+# Cross-validation for regularized multinomial logistic regression on non-zero variance pixels
+cv.multi.logit.some.pixel <- cv.glmnet(x = predictors.some.pixel, y = response.some.pixel, 
+                                       family = "multinomial", nfolds = 10, alpha = 1)
+plot(cv.multi.logit.some.pixel)
+
+# Fit model and make predictions on the test data
+predictions.logit.some.pixel.test <- predict(cv.multi.logit.some.pixel, 
+                                             newx = test.some.pixel, s = "lambda.min", type = "response") %>% 
+                                                 as.data.frame()
+
+# Rename columns and compute predictions
+names(predictions.logit.some.pixel.test) <- sub("\\..*", "", names(predictions.logit.some.pixel.test))
+predictions.logit.some.pixel.test$prediction <- as.factor(getMaxClass(predictions.logit.some.pixel.test[, 1:10]))
+
+# Evaluate model performance using confusionMatrix()
+confusionMatrix(data = predictions.logit.some.pixel.test$prediction, reference = test.mnist.dat$label)
+```
+
+#### - SVM ON NON-ZERO VARIANCE PIXEL ONLY-
+
+```{r svm_non_zero_variance_pixel}
+# Set training and testing datasets
+train.mnist.some.pixel <- train.mnist.dat[, !useless.pixel]
+test.mnist.some.pixel <- test.mnist.dat[, !useless.pixel]
+
+# Tune different SVM models with different kernels and parameter ranges
+# Radial kernel SVM models
+cv.svm <- tune.svm(label ~ ., data = train.mnist.some.pixel, gamma = c(10^-8,10^-7,10^-6,10^-5), cost = c(1,10,100))
+
+# Linear kernel SVM
+cv.svm.linear <- tune.svm(label ~ ., data = train.mnist.some.pixel, kernel = "linear", cost = 10^(0:4))
+plot(cv.svm.linear.some.pixel)
+
+# Polynomial kernel SVM
+cv.svm.polynomial <- tune.svm(label ~ ., data = train.mnist.some.pixel, kernel = "polynomial", degree = 3, cost = 10^(0:4))
+plot(cv.svm.polynomial.some.pixel)
+```
+
+```{r, include = FALSE}
+models_list <- list(
+  cv.svm = list(tune.svm = cv.svm.some.pixel),
+  cv.svm.2 = list(tune.svm = cv.svm.some.pixel.2),
+  cv.svm.3 = list(tune.svm = cv.svm.some.pixel.3),
+  cv.svm.linear = list(tune.svm = cv.svm.linear.some.pixel),
+  cv.svm.polynomial = list(tune.svm = cv.svm.polynomial.some.pixel)
+)
+
+
+for (i in names(models_list)) {
+  best.svm <- models_list[[i]][["tune.svm"]]$best.model
+  best.param.svm <- models_list[[i]][["tune.svm"]]$best.parameters
+  
+  # Make predictions on test data using each model
+  predictions <- predict(best.svm, newdata = test.mnist.some.pixel) %>% unlist()
+  
+  # Create confusion matrix
+  confusion_matrix <- confusionMatrix(data = predictions, reference = test.mnist.some.pixel$label)
+  
+  # Save predictions and confusion matrix in the models_list
+  models_list[[i]]$predictions <- predictions
+  models_list[[i]]$confusion.matrix <- confusion_matrix
+  models_list[[i]]$best.parameters <- best.param.svm
+  # Print model name, best parameters, and confusion matrix
+  cat("Confusion matrix for", i, ":\n")
+  cat("\n")
+  cat("Best parameters are: ","\n")
+  print(best.param.svm)
+  cat("\n")
+  print(confusion_matrix)
+  cat("------------------------------------------------------------------------------------------")
+  cat("\n")
+  cat("\n")
+}
+```

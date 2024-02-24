@@ -1,0 +1,841 @@
+---
+title: "Writing Assignment Report"
+author: "Nicola Greco (2327775) and Ivo Borkus (6746713)"
+date: "2023-12-07"
+output:
+  pdf_document:
+    toc: yes
+    toc_depth: 3
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, out.width = '70%', fig.align = "center")
+```
+
+```{r library and functions, echo=FALSE, include=FALSE}
+library(tidyverse)
+library(magrittr)
+library(nnet)
+library(caret)
+library(glmnet)
+library(gridExtra)
+library(grid)
+library(e1071)
+library(viridisLite)
+library(ggpubr)
+# Function to display an image from row data
+show_row <- function(row) {
+  OpenImageR::imageShow(matrix(as.numeric(row[-1]), nrow = 28, ncol = 28, byrow = TRUE))
+}
+
+print_matrix <- function(conf_matrix) {
+  Accuracy <- as.character(round(conf_matrix$overall["Accuracy"], digits = 4))
+  CI <- paste(round(conf_matrix$overall[c("AccuracyLower", "AccuracyUpper")], digits = 4), collapse = ", ")
+  df <- data.frame(Accuracy=Accuracy, CI = CI)
+  print(df)
+}
+
+calculate_accuracy <- function(confusion_matrix) {
+  # Calculate the sum of the diagonal elements, which represent the true positives
+  true_positives <- sum(diag(confusion_matrix))
+  # Calculate the total number of instances, which is the sum of all elements in the matrix
+  total_instances <- sum(confusion_matrix)
+  # Calculate accuracy
+  accuracy <- true_positives / total_instances
+  return(accuracy)
+}
+
+calculate_accuracy_ci <- function(confusion_matrix) {
+  accuracy <- calculate_accuracy(confusion_matrix)
+  
+  # Confidence level
+  z <- qnorm(0.975) # the z-value for a 95% confidence interval
+  
+  # Calculate Wilson score interval for 95% confidence
+  phat <- accuracy # observed proportion
+  n <-  sum(confusion_matrix)
+  denominator <- 1 + (z^2 / n)
+  center <- (phat + z^2 / (2 * n)) / denominator
+  error_margin <- (z * sqrt((phat * (1 - phat) + z^2 / (4 * n)) / n)) / denominator
+  
+  lower_bound <- center - error_margin
+  upper_bound <- center + error_margin
+  
+  # Format CI as a character string
+  ci_string <- sprintf("(%.4f, %.4f)", lower_bound, upper_bound)
+  
+  return(ci_string)
+}
+
+tt3 <- ttheme_default(
+                     core=list(bg_params=list(fill=c("#fff7ec"))), 
+                  colhead=list(bg_params=list(fill=c("#ffd6b0"))))
+
+print_stats <- function(conf_matrix) {
+  Accuracy <- as.character(round(conf_matrix$overall["Accuracy"], digits = 4))
+  CI <- paste(round(conf_matrix$overall[c("AccuracyLower", "AccuracyUpper")], 
+                                                          digits = 4), collapse = ", ")
+  
+  
+  confusionmatrix_metrics_df <- data.frame(
+            Statistics = c("Accuracy", "95% CI"),
+            values = c(Accuracy, CI)
+          )
+  g <- tableGrob(confusionmatrix_metrics_df, rows = NULL,theme = tt3)
+  
+  return(g)
+}
+
+print_stats_caret <- function(conf_matrix) {
+  Accuracy <- as.character(calculate_accuracy(conf_matrix))
+  CI <- as.character(calculate_accuracy_ci(conf_matrix))
+  
+  confusionmatrix_metrics_df <- data.frame(
+            Statistics = c("Accuracy", "95% CI"),
+            values = c(Accuracy, CI)
+          )
+  g <- tableGrob(confusionmatrix_metrics_df, rows = NULL,theme = tt3)
+  
+  return(g)
+}
+
+plot_confusion_matrix_caret <- function(conf_matrix) {
+  # Convert confusion matrix to a data frame
+  confusion_df <- as.data.frame(as.table(conf_matrix))
+  
+  plot_gg <- ggplot(confusion_df, aes(x = True, y = Predicted, fill = Freq, label = Freq)) +
+    geom_tile() +
+    geom_text(color = "black", size = 4) +
+    scale_fill_gradient(low = "#fff7ec", high = "orange3") + # this sets the color gradient
+    theme_minimal() +
+    labs(title = "Confusion Matrix", x = "True Class", y = "Predicted Class") + 
+    theme(axis.title = element_text(size=15, face="italic"),  # increased axis title size
+          axis.text = element_text(size=10, face="bold"),                  # increased axis text size
+          plot.title = element_text(size=20)                  # increased plot title size
+         ) 
+  return(plot_gg)
+}
+
+plot_confusion_matrix_glmnet <- function(conf_matrix) {
+  # Convert confusion matrix to a data frame
+  confusion_df <- as.data.frame(as.table(conf_matrix$table))
+  
+  # Plot the confusion matrix
+  plot_gg <- ggplot(confusion_df, aes(x = Reference, y = Prediction, fill = Freq, label = Freq)) +
+    geom_tile() +
+    geom_text(color = "black", size = 4) +
+    scale_fill_gradient(low = "#fff7ec", high = "orange3") + # this sets the color gradient
+    theme_minimal() +
+    labs(title = "Confusion Matrix", x = "True Class", y = "Predicted Class") + 
+    theme(axis.title = element_text(size=15, face="italic"),  # increased axis title size
+          axis.text = element_text(size=10, face="bold"),                  # increased axis text size
+          plot.title = element_text(size=20)                  # increased plot title size
+         ) 
+  return(plot_gg)
+}
+
+plot_cm_stats <- function(conf_matrix) {
+  
+  if (identical(class(conf_matrix),"confusionMatrix")) {
+    plt1 <- print_stats(conf_matrix)
+    plt2 <- plot_confusion_matrix_glmnet(conf_matrix)
+  } else {
+    plt1 <- print_stats_caret(conf_matrix)
+    plt2 <- plot_confusion_matrix_caret(conf_matrix)
+  }
+  grid.arrange(plt2, plt1, 
+               nrow = 2, 
+               ncol = 1, 
+               heights = c(5,1)   # Add this line - adjust these values according to your needs
+              )
+}
+
+plot_cm_stats_pairs <- function(conf_matrix) {
+  plt1 <- print_stats(conf_matrix)
+  plt2 <- plot_confusion_matrix_glmnet(conf_matrix)
+  p <- grid.arrange(plt2, plt1, 
+               nrow = 2, 
+               ncol = 1, 
+               heights = c(2,1)
+              )
+  return(p)
+}
+
+
+#plot_pair_digit <- function()
+
+load("Writing_assignment_enviroment_2.RData")
+```
+
+
+## 0-Introduction
+
+The Modified National Institute of Standards and Technology (MNIST) dataset serves as the foundation for our analysis. It is a renowned collection of 42,000 handwritten digits extensively utilized in the field of machine learning for image processing tasks.
+
+The primary objective of our analysis was to examine various machine learning models' ability to accurately predict which digit had been written based on these pixel images and other derived features. This investigation will encompass different models such as Logistic Regression, LASSO regularization, and Support Vector Machines (SVM).
+
+One noteworthy aspect throughout our modeling phase involves tuning hyperparameters related to model complexity using cross-validation (cv). These parameters control overfitting versus underfitting trade-off - too much complexity may lead to overfitting where our model memorizes noise instead of generalizing patterns whereas too little can result in underfitting where relevant trends are missed out.
+
+REF(<https://docs.ultralytics.com/datasets/classify/mnist/#extended-mnist-emnist>).
+
+
+## 1-The data exploration
+
+In this section, we conducted an exploratory analysis of the MNIST dataset to understand its characteristics and structure.
+
+### 1.1-Structure of the data set
+As stated before the data set contains 42000 samples of handwritten digits.
+The digits ranges from 0 to 9, with each pixel value varying between 0 (white) and 255 (black). The size of each image is standard at 28x28 pixels, hence each instance in this dataset holds 784 feature values (pixels), with an additional column allocated for class labels:
+
+```{r dataset example, echo=FALSE}
+print(mnist.dat[1:3, c(1, 203:210)])
+```
+
+Example of a digit, or 1 row of data (excluding the label):
+
+```{r, echo=FALSE, out.width = "50%", fig.align='center'}
+show_row(mnist.dat[2,])
+```
+
+### 1.2-Missing data and useless pixels
+
+The second step in our data exploration was to check for missing values within the dataset. We found that no NA or null values present in the dataset. This makes sense as pixels without any colour are marked as 0 expression and no labels are missing.
+
+Having established that there was no missing information to deal with, we moved on to summarize the statistics for each pixel. The statistical measures used included minima, maxima, first quartile (25th percentile), second quartile (median), third quartile (75th percentile), and mean. These statistics provided insights into variation among pixel intensities and their potential discriminative power.
+
+```{r summary_stat, echo=FALSE}
+# Compute summary statistics for each column
+summary.stat <- sapply(mnist.dat, summary) %>% t()
+
+print(summary.stat[95:100,])
+```
+
+We then moved on to investigate if there were any pixels that could be considered useless or redundant for our predictive modeling. We identified these as pixels with zero variance across all images, meaning they held identical values across all instances in the data set. Such features would not contribute any useful information for differentiating between digit classes and hence can be safely removed from our feature set.
+
+This is an example of some of the pixel that we defined Useless:
+
+```{r summary_stat_2, echo=FALSE}
+# Check for useless pixels by identifying columns where min and max are the same
+useless.pixel <- (summary.stat[,1] == summary.stat[,6])
+
+# sum(useless.pixel)
+# There are 76 pixels found with identical min and max values.
+
+print(summary.stat[useless.pixel,][20:25,])
+```
+
+We so identified 76 such "useless" pixels which were subsequently excluded from further analyses.
+
+Another important aspect of data exploration is understanding class distribution. Our task is a multi-class classification problem, where we are trying to classify each image into one of ten classes (digits 0-9). A skewed class distribution can often lead to biased models that tend towards predicting majority classes while performing poorly on minority ones.
+
+```{r frequency, echo = FALSE, out.width='70%'}
+#absolute frequencies of variables
+mnist.dat$label <- as.factor(mnist.dat$label)
+
+absolute_frequencies <- mnist.dat %>%
+  group_by(label) %>%
+  summarize(absolute_frequency = n(), relative_frequency = n())
+
+# relative frequencies
+total_samples <- nrow(mnist.dat)
+relative_frequencies <- absolute_frequencies %>%
+  mutate(relative_frequency = absolute_frequency / total_samples)
+
+ggplot(relative_frequencies, aes(x = factor(label), y = relative_frequency)) +
+  geom_bar(stat = "identity", fill = "skyblue", color = "black") +
+  labs(title = "Relative Frequencies of Digits", x = "Class (Label)", y = "Relative Frequency") +
+  theme_minimal()
+
+```
+
+Plotting relative frequencies revealed that our classes are fairly balanced with '1' being slightly more abundant than others. However, it's worth noting that even if we naively predicted every instance as belonging to this majority class ('1'), our accuracy would only be:
+
+```{r calculating accuracy, echo=FALSE}
+# To answare to "what percentage of cases would be classified correctly if we simply predict the majority class?"
+
+index.max <- which.max(absolute_frequencies$absolute_frequency)
+
+accuracy_predicting_major <- as.integer(absolute_frequencies[index.max, 2]) / sum(absolute_frequencies$absolute_frequency) * 100
+
+cat(accuracy_predicting_major, "%", "\n")
+```
+
+This gives us a baseline accuracy that any subsequent model should aim to surpass.
+
+### 1.2 - Average digits
+
+To gain a deeper understanding of our data and examine any visual patterns that may exist, we decided to calculate the mean pixel value for each label. In other words, we aimed to create an 'average' digit representation for each label in our dataset. This involved grouping the dataset by labels and then computing the mean of each column within these groups.
+
+```{r echo=FALSE}
+# Group by "label" and calculate the mean of each column for each label
+mean_label <- mnist.dat %>%
+  group_by(label) %>%
+    summarise_all(.funs = mean, na.rm = TRUE)
+```
+
+Following this computation process, we plotted these 'average' digit representations to visually ascertain their semblance with actual handwritten digits. Here are few examples:
+
+```{r, echo=FALSE}
+# Convert images to grobs
+grobs <- list()
+for (i in c(2,5,9)) {
+  img <- matrix(as.numeric(mean_label[i,-1]), nrow = 28, ncol = 28, byrow = TRUE)
+  img <- (img - min(img)) / (max(img) - min(img))
+  g <- grid::rasterGrob(img, interpolate=TRUE)
+  grobs[[length(grobs)+1]] <- g
+}
+# Combine grob objects into a single grid
+grid.newpage()
+grid.draw(do.call(gridExtra::grid.arrange, c(grobs, nrow = 1)))
+```
+
+
+```{r, echo=FALSE}
+par(mfrow=c(1,1))
+```
+
+
+The above plots represent average images corresponding to labels '1', '4', and '8'. On close observation of these images alongside their corresponding labels gives us interesting insights into how different parts of a digit may contribute towards its identification.
+
+While we realize that some pixels clearly indicate the presence of specific digits due to their consistent appearance across different samples (as they appear darker in the average image), there are also pixels that do not contribute significantly towards identifying a particular digit (as they appear lighter).
+
+By performing this analysis at an early stage in our project gave us valuable insights about feature importance which could guide our further analysis.
+
+### 1.3- New features 
+
+Using the knowledge we gained from the exploratory analysis we concluded that we could build three relatively simple features to help aid the multinomial logistic regression model in correctly classifying digits.
+
+#### 1.3.1 - Ink per digit
+
+The first feature we introduce is called 'ink', which quantifies the sum of all pixel values in an image. The intuition behind this is the following: Different digits may inherently require varying amounts of ink due to their shapes and structures. One example of this is the digit 1 and 0, a one will most likely be represented as a single dash, whereas the 0 might use significantly more of the image when writing it in a circle.
+
+```{r ink_column, echo=FALSE}
+# Create a new column 'ink' representing the amount of ink in each digit
+mnist.dat.ink <- mnist.dat
+```
+
+```{r ink_column_2, echo=FALSE}
+# Create a new column 'ink' representing the amount of ink in each digit
+mnist.dat.ink$ink <- apply(mnist.dat.ink, 1, function(row) sum(as.integer(row[-1])))
+```
+
+We plotted violin plots to visualize the distribution of ink values across different classes:
+
+```{r, echo=FALSE, warning=FALSE, out.width='70%'}
+ggplot(mnist.dat.ink, aes(x = label, y = ink, fill = label)) +
+  geom_violin(trim = FALSE) +  geom_boxplot(width = 0.1, alpha = 0.9, outlier.shape = NA) +
+  labs(x = "Label", y = "Ink Values") +
+  ggtitle("Violin Plot of Ink Values for Different Labels") + guides(fill = FALSE) + theme_minimal() + stat_summary(fun = 'median', geom = 'point')
+  
+```
+
+From above plot it was clear that there are significant differences in the ink distribution between some classes (e.g., classes '1' and '0'), but others look very similar. To further investigate this aspect, we computed mean and standard deviation of ink feature for each class:
+
+```{r ink_summary, echo=FALSE, warning=FALSE, include=FALSE}
+# Calculate ink statistics per label (mean and standard deviation)
+nested.mean <- mnist.dat.ink %>% group_by(label) %>% select(ink) %>% summarise_all(mean) %>% rename(mean.ink = ink)
+nested.sd <- mnist.dat.ink %>% group_by(label) %>% select(ink) %>% summarise_all(sd) %>% rename(sd.ink = ink)
+ink.stat.per.label <- merge(nested.mean, nested.sd, by = "label")
+```
+
+```{r, echo=FALSE}
+print(ink.stat.per.label)
+```
+
+This table gives us the average amount of 'ink' and its standard deviation for each digit. By comparing these values across digits, we can infer which digits may be more distinct or similar in terms of their 'ink' usage.
+
+The insight derived from this analysis is crucial as it indicates that our newly created feature - 'Ink', could help distinguish between different digits to a certain extent.
+
+
+#### 1.3.2 Principle Component Analysis (PCA)
+
+The second feature that can be supplied to our logistic regression model is a principle component of the PCA dimension reduction algorithm. After several iterations of testing various transformations and computed attributes from the raw pixel data, we identified the first principal component (PC1) as a promising feature. The first principal component captures most of the variance in our data and helps us understand how each digit is written.
+
+The intuition behind this choice is that the projection of a point on the PC1 represents a linear combination of our original variables (the pixels), which maximizes the total variance in our dataset. Hence, PC1 holds significant information about patterns or structures in these images that might be vital for distinguishing one digit from another.
+
+To compute this new feature, we first carried out Principal Component Analysis (PCA) using R's `prcomp` function form the packages *stats* with 'scale = TRUE' and default settings for the other paramaters. We then projected our original data onto PC1 through a dot product operation between each point and PC1:
+
+```{r, eval=FALSE}
+# Perform Principal Component Analysis (PCA) 
+pca_result <- prcomp(features, center = TRUE, scale. = TRUE)
+
+projection_1pc <- as.vector(as.matrix(features) %*% pca_result$rotation[, 1])
+```
+
+
+```{r PCA, echo=FALSE}
+# Retain non-useless pixels from the dataset
+features <- mnist.dat[, !useless.pixel]
+
+# Perform Principal Component Analysis (PCA) on the selected features
+#  <- prcomp(features[, -1], center = TRUE, scale. = TRUE)
+
+# Projecting data onto the first and second principal components
+projection_1pc <- as.vector(as.matrix(features[, -1]) %*% pca_result$rotation[, 1])
+
+# Add PCA-projection results as new features to the dataset
+mnist.dat.ink <- cbind(mnist.dat.ink, PC1_Projection = projection_1pc)
+
+
+```
+
+
+
+## 2-Machine learning analysis.
+
+### 2.1 - Logit on Ink only as predictor
+
+Our first approach to model fitting was a simple logistic regression using the 'ink' feature as the predictor variable.
+
+The data was prepared by scaling the 'ink' column in our dataset. The purpose of this scaling was to standardize our predictor variable so that it has a mean of 0 and a standard deviation of 1, which helps in ensuring consistent interpretation of coefficients across different scales and to ensure that each feature contributes proportionally to the final prediction:
+
+```{r model_training_whole_dataset, echo=FALSE}
+# Scale the 'ink' column
+mnist.dat.ink$ink.scaled <- scale(mnist.dat.ink$ink)
+```
+
+After scaling, we fit a multinomial logistic regression model using only the 'ink' feature. We used the *multinom()* function form the packages *nnet*. 
+
+```{r model_training_whole_dataset_2, include=TRUE}
+# Fit multinomial logistic regression model using only 'ink' feature
+multi.logit <- multinom(label ~ ink.scaled, data = mnist.dat.ink)
+```
+
+This provided us with estimated parameters for each class in relation to our predictor variable:
+
+```{r, echo=FALSE, include=FALSE}
+multi.logit.ink.only <- multinom(label ~ ink.scaled, data = mnist.dat.ink)
+```
+
+```{r, echo=FALSE}
+print(multi.logit.ink.only)
+```
+
+Interestingly, when we observed parameters estimated by this model, it indicated certain digits are more likely given higher or lower amounts of ink usage. However, considering that handwritten digits can vary greatly in size and thickness between individuals and even different instances from the same individual, we did not expect this model to be highly accurate.
+
+Further analysis was conducted on pairs of digits with notably different and similar distributions of ink usage respectively. We hypothesized that a logistic regression model would perform better on a simpler task of distinguishing between pairs with diverse ink distribution such as 1-8 or 4-0 than those with similar distributions like 3-8 or 9-4.
+
+In essence, what we did here was creating sub-datasets containing only two types of digits at a time (e.g., only digits '1' and '8'), then training separate logit models on these smaller datasets:
+
+```{r, eval=FALSE}
+
+two.digits.dataset <- mnist.dat.ink[mnist.dat.ink$label %in% c(1,8),]
+
+model <- multinom(label ~ ink.scaled, data = two.digits.dataset)
+```
+
+### 2.2 - Logit with Ink and additional feature as predictiors
+
+
+To improve upon our previous model's performance, we decided to introduce an additional predictor variable derived from Principal Component Analysis (PCA).
+
+We trained a new multinomial logistic regression model using both the 'ink' and '1PC_Projection'. The rationale behind this combination was that while ink quantifies amount of writing, the PCA feature could potentially capture patterns in how digits are written. Thus, together they might provide a more comprehensive description of each digit.
+
+```{r, echo=FALSE}
+# Display the structure of the modified dataset
+mnist.dat.ink[1:6, c(1, 786:788)]
+```
+
+Here we plot the ink value on the y axis and the PC1 projection on the x.
+
+```{r, echo=FALSE}
+ggplot(mnist.dat.ink, aes(x=ink, y=PC1_Projection, color = label)) +
+  geom_point(size=2, shape=21) + theme_bw()
+```
+
+We noticed that while some labels appeared clustered together when plotted against these two features ('ink' on y-axis vs 'PC1_Projection' on x-axis), they were not linearly separable. Hence it was anticipated that the prediction ability of this dual-feature model may not be significantly superior to the single-feature one. Again we used the *multinom()* function form the packages *nnet*:
+
+```{r, eval=FALSE}
+# Fit multinomial logistic regression models using the first principal components
+model <- multinom(label ~ ink.scaled + PC1_Projection, data = mnist.dat.ink)
+```
+
+```{r model_fitting_with_pca, echo=FALSE, include=FALSE}
+# Fit multinomial logistic regression models using the first principal components
+multi.logit.ink.PC1 <- multinom(label ~ ink.scaled + PC1_Projection, data = mnist.dat.ink)
+```
+
+
+### 2.3 - Multinomial Logistic Regression with Lasso regularization
+
+In this section, we applied the Multinomial Logistic Regression with Lasso regularization to our data set. Regularization is a technique used to prevent overfitting by adding a penalty term to the loss function that the algorithm optimizes. The objective was to develop a predictive model that can accurately classify handwritten digits using the raw pixel values themselves as features.
+
+Before starting, we prepared the data by creating a training and testing split. It's important to mention that we eliminated pixels that have zero variance since they would not contribute to any predictive value in our models due to their constant nature. This procedure helps us reduce dimensionality and computational complexity. We set the seed for reproducibility: _set.seed(123)_.
+
+```{r include=FALSE}
+# Set seed
+set.seed(123)
+```
+
+The split was done by sampling 5000 examples from the dataset for training purposes, while the rest was reserved for model validation:
+
+```{r message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
+# Split data into training and testing sets
+
+# sample_indices <- sample(1:nrow(data), 5000)
+# x_train <- data[sample_indices, ]
+# test_indices <- setdiff(1:nrow(data), sample_indices)
+# x_test <- data[test_indices,]
+
+train.mnist.dat <- mnist.dat[, !useless.pixel] %>% sample_n(5000)
+test.mnist.dat <- mnist.dat[, !useless.pixel] %>% anti_join(train.mnist.dat)
+```
+
+Next, we applied Cross-Validation (CV) on our training data to tune hyperparameters in our model. In specific, CV aids in reducing overfitting, improving algorithm performance and helping us choose the most optimal parameters for our model.
+
+The function `cv.glmnet()` from `glmnet` package was used for this purpose where alpha = 1 implies application of pure lasso regression (L1 penalty) and no ridge regression (L2 penalty). Here 'alpha' is a parameter for elastic net mixing which combines properties of both lasso and ridge penalties.
+
+```{r, eval=FALSE}
+cv.logit <- cv.glmnet(x = predictors, y = response, 
+                                       family = "multinomial", nfolds = 15, alpha = 1)
+```
+
+```{r multi_logit_non_zero_variance_pixel, include=FALSE}
+# Extract response variable and predictors for non-zero variance pixels
+response <- as.integer(as.character(train.mnist.dat[, 1]))
+
+predictors <- train.mnist.dat %>% select(-label) %>% as.matrix()
+
+test <- test.mnist.dat %>% select(-label) %>% as.matrix()
+
+test.label <- test.mnist.dat %>% select(label) %>% as.vector()
+
+
+# Cross-validation for regularized multinomial logistic regression on non-zero variance pixels
+# cv.multi.logit <- cv.glmnet(x = predictors, y = response, 
+                                  #  = "multinomial", nfolds = 15, alpha = 1)
+
+```
+
+This tuning method returns the optimal value of lambda (the tuning parameter that controls the overall strength of the penalty) that minimizes the cross-validated error.
+
+Our result plot shows a curve indicating how model performance varies with different values of lambda.
+
+```{r, echo=FALSE}
+plot(cv.multi.logit)
+```
+
+The best value of 'lambda' is chosen based on two rules: 'min' and '1se'. The former represents absolute minimum, while the latter allows for model simplicity, where it picks maximum lambda such that error is within one standard error of the minimum.
+
+The cv.glmnet function gives us both these options and we chose to proceed with '1se' as it provides a simpler model by reducing complexity which helps avoid overfitting.
+
+```{r, echo=FALSE}
+print(cv.multi.logit)
+```
+
+Interestingly, only 94 coefficients were non-zero. This means only 94 pixels are used for making predictions which demonstrates Lasso's feature selection ability by driving irrelevant features' coefficients to zero and hence retaining only significant predictors.
+
+### 2.4 SVM
+
+Finally, we trained different Support Vector Machine (SVM) models with various kernels and parameters using cross-validation to find optimal hyperparameters.
+
+To find an optimal model configuration for our task, we used the 'tune.svm()' function from the 'e1071' package in R. This function performs a grid search over specified parameter ranges, training an SVM for each combination and evaluating its performance using cross-validation.
+
+For radial basis function (RBF) kernel, two key parameters were tuned: gamma and cost. Gamma controls the influence of individual training samples on shaping the decision boundary while cost determines how much penalty should be applied for misclassification during training.
+
+For the SVM model with linear kernel the only parameter to be tuned was cost, with the same effect that it has in the radial.
+
+Finally, we explored the polynomial kernel that allows our SVM model to create polynomial decision boundaries. We fine-tuned both 'degree', which determines the degree of the polynomial used for creating decision boundary and 'cost' as earlier.
+
+```{r svm_non_zero_variance_pixel, eval = FALSE}
+# Tune different SVM models with different kernels and parameter ranges: 
+
+# Radial kernel SVM models
+cv.svm.radial <- tune.svm(label ~ ., data = train.mnist.dat, kernel = "radial"
+                                gamma = c(10^-8,10^-7,10^-6,10^-5), cost = c(1,10,50,100))
+
+
+# Linear kernel SVM
+cv.svm.linear <- tune.svm(label ~ ., data = train.mnist.dat, 
+                                kernel = "linear", cost = 10^(-1:2))
+
+
+# Polynomial kernel SVM
+cv.svm.polynomial <- tune.svm(label ~ ., data = train.mnist.dat, 
+                                kernel = "polynomial", degree = 2:3, cost = 10^(-1:2))
+```
+
+##### CV for radial:
+
+The graph displays the error across different combinations of cost and gamma values resulted form the CV of SVM with radial kernel. It provides visual intuition about the parameter space and how model performance changes with varying parameters:
+
+```{r, echo=FALSE}
+plot(cv.svm.radial)
+```
+
+From the table below that showcases the performances per hyperparameter combination:
+
+```{r, echo=FALSE}
+cv.svm.radial$performances
+```
+
+We so identified optimal gamma as 1e-06 and cost as 100 which yielded the smallest cross validation error of approximately 0.0704. 
+
+##### CV for linear: 
+
+The process is repeated for linear kernel SVM model.
+Hyperparameters error plot:
+
+```{r, echo=FALSE}
+plot(cv.svm.linear)
+```
+
+For linear kernel-based SVMs, it seems that changing the cost did not affect model performance as indicated by constant cross-validation errors in plot above. We can see it clearly by plotting the performances table for each hyperparameter value:
+
+```{r, echo=FALSE}
+cv.svm.linear$performances
+```
+
+So we select a cost value of 0.1 with an associated performance score of approximately 0.0934. We accepted the default choise of the _tune.svm()_ function that automatically choose the lowest parameters in case there is no clear best option.
+
+##### CV for Polynomial
+And also for polynomial kernel SVM model.
+
+Hyperparameters error plot:
+
+```{r, echo=FALSE}
+plot(cv.svm.polynomial)
+```
+
+Through cross-validation hyperparameter tuning, sveral optimal degree and cost combination were found, with a performance of approximately 0.046. We so choose to select the model with degree and cost 2 and 0.1 respectively, to maintain the model as simple as possible.
+
+```{r, echo=FALSE}
+cv.svm.polynomial$performances
+```
+
+
+
+
+## 3-Discussion:
+
+### 3.1 - Logit on Ink only
+
+The first logit model trained will help us understand how much of the classification task can be done by considering solely the total ink usage in digit images.
+
+The first step is to use our trained model to predict classes on the same dataset that we used for training. Although not typically recommended due to overfitting concerns, given that this part of the assignment only requires evaluating simplistic models, we are using complete data set for both training and evaluation
+
+```{r, include=FALSE, echo=TRUE}
+# Predict using the trained model on the whole dataset
+predictions.ink.only <- predict(multi.logit.ink.only, newdata = mnist.dat.ink)
+
+# Calculate confusion matrix and evaluate performance using confusionMatrix()
+conf.matrix.ink.only <- confusionMatrix(data = predictions.ink.only, reference = mnist.dat.ink$label)
+```
+
+Let's take a look at the resulting confusion matrix and other statistics provided by caret package:
+
+
+```{r, echo=FALSE,out.width='70%'}
+plot_cm_stats(conf.matrix.ink.only)
+```
+
+The results show that our simplistic model struggles when differentiating among digits 4-5-6 which were not predicted at all leading to low overall performance with an accuracy rate of around 22%.
+
+To further assess our model's performance more directly, let's perform an experiment where we focus on predicting specific pairs of digits. The aim is to examine whether there are certain digit pairs that can be distinguished easily based on the ink feature alone.
+
+```{r model_testing_specific_classes, echo=FALSE, include=FALSE}
+# Define class pairs
+class_pairs <- list(c(1, 8), c(4, 0), c(3, 8),  c(9,4))
+
+# Initialize an empty list to store confusion matrices
+conf_matrices <- list()
+
+# Loop through each class pair
+for (i in seq_along(class_pairs)) {
+
+  # Create a dataset for the pair of digits
+  two.digits.dataset <- mnist.dat.ink[mnist.dat.ink$label %in% class_pairs[[i]], ]
+  two.digits.dataset$label <- as.factor(as.character(two.digits.dataset$label))
+  
+  # Fit model for specific class pair
+  model <- multinom(label ~ ink.scaled, data = two.digits.dataset);
+  
+  # Make predictions for the specific class pair
+  predictions <- predict(model, newdata = two.digits.dataset)
+  
+  # Calculate confusion matrix for the specific class pair using confusionMatrix()
+  conf_matrices[[i]] <- confusionMatrix(data = predictions, reference = two.digits.dataset$label)
+}
+```
+
+
+```{r,echo=FALSE, fig.width=10, out.width = '100%'}
+plot_list <- list()
+
+for (i in seq_along(class_pairs)) {
+  p <- plot_confusion_matrix_glmnet(conf_matrices[[i]]) 
+  
+  title <- paste("Pair of digits:", str_flatten(class_pairs[[i]], collapse = " - "))
+  
+  p <- p + labs(title = title)
+  
+  if (i == 1) {
+      p <- p + theme(axis.title = element_text(size=13, face="italic"),  # increased axis title size
+          axis.text = element_text(size=8),                  # increased axis text size
+          plot.title = element_text(size=17, face="bold"),                  # increased plot title size
+          legend.position = "bottom", legend.direction = "horizontal", legend.text = element_text(angle = 40)
+         ) 
+  } else {
+    p <- p + theme(
+          axis.title.x = element_text(size=13, face="italic"),  # increased axis title size
+          axis.title.y = element_blank(), 
+          axis.text = element_text(size=8),                  # increased axis text size
+          plot.title = element_text(size=17, face="bold"),                  # increased plot title size
+          legend.position = "bottom", legend.direction = "horizontal", legend.text = element_text(angle = 40)
+          ) 
+  }
+  
+  plot_list[[i]] <- p
+}
+
+
+for (i in seq_along(class_pairs)) {
+  p <- print_stats(conf_matrices[[i]])
+  plot_list[[4 + i]] <- p
+}
+
+
+grid.arrange(grobs = plot_list, nrow = 2, ncol = 4)
+```
+
+The above results reveals that certain pairs like '1' and '8', '4' and '0', have higher accuracies around ~90% and ~76% respectively suggesting that these pairs can be distinguished quite accurately with just ink usage information. However, for other digit pairs, the model does not perform well.
+
+In conclusion, using ink as the sole feature to classify digits has its limitations but can provide some reasonable performance for certain pairs of digits. The next sections will present results from more sophisticated models that utilize multiple features.
+
+
+### 3.2 - Logit with Ink and 1PC
+
+The confusion matrix was then generated for this model to evaluate its predictive accuracy on each digit:
+
+
+```{r, echo=TRUE, include=FALSE}
+# Predictions using models fitted with principal components
+predictions.ink.PC1 <- predict(multi.logit.ink.PC1, newdata = mnist.dat.ink)
+
+# Evaluate model performance using confusionMatrix() for models using PCA
+conf.matrix.ink.PC1 <- confusionMatrix(data = predictions.ink.PC1, reference = mnist.dat.ink$label)
+```
+
+Let's take a look at the resulting confusion matrix and other statistics provided by caret package:
+
+```{r, echo=FALSE, out.width='70%'}
+plot_cm_stats(conf.matrix.ink.PC1)
+```
+
+We observed improved overall accuracy compared to the previous models that only used 'Ink' as a single feature; suggesting that combining multiple features can improve classification outcomes in our dataset.
+
+Interestingly, we found that the digits '0' and '1' had the highest sensitivity and positive predictive rate. This observation might be attributed to the unique ink distribution in these digits, distinct from others, as was seen with the 'Ink' only model.
+
+In summary, utilizing both the total ink used and patterns of writing obtained via PCA served to increase our model's predictive power. However, there is still room for improvement; performance remained sub-optimal for several digits. We will explore other techniques, such as regularization and support vector machines (SVM), in subsequent sections to see if these methods can further enhance our models' performances.
+
+### 3.3 - Multinomial Logistic Regression with Lasso regularization
+
+We proceeded to evaluate the performance of our multinomial logistic regression model using Lasso regularization. The two critical hyperparameters in this case were the lambda values: 'lambda.min' (minimal) and 'lambda.1se' (simplest). 
+We assess our model's classification performance using confusion matrices for both lambda values starting with 'lambda.min':
+
+```{r, echo=FALSE}
+conf.matrix.multi.logit.min <- confusion.glmnet(cv.multi.logit, 
+                              s = cv.multi.logit$lambda.min, 
+                                newx = test, 
+                                  newy = test.mnist.dat$label)
+
+prediction.multi.logit.min <- predict(cv.multi.logit, newx = test, s = cv.multi.logit$lambda.min, type = "class")
+```
+
+```{r, echo=FALSE, out.width='70%'}
+plot_cm_stats(conf.matrix.multi.logit.min)
+```
+
+The output reveals a relatively high overall accuracy (89.95%). Following this, we evaluated performances with 'lambda.1se':
+
+```{r, echo=FALSE}
+conf.matrix.multi.logit.1se <- confusion.glmnet(cv.multi.logit, 
+                              s = cv.multi.logit$lambda.1se, 
+                                newx = test, 
+                                  newy = test.mnist.dat$label)
+
+```
+
+```{r, echo=FALSE, out.width='70%'}
+plot_cm_stats(conf.matrix.multi.logit.1se)
+```
+
+With 'Lambda.se', which yields a simpler model relative to ‘Lambda.min’, we still manage to retain a comparable accuracy rate (89.64%). This demonstrates Lasso's capability in performing feature selection, providing us with a model that's less complex without significantly sacrificing classification performance.
+
+### 3.4 - SVM
+
+#### CV results and comparison between different kernel:
+
+##### Results for radial:
+
+Applying the best parameters (gamma: 1e-06, cost: 100) and running predictions on our test data set, a confusion matrix was generated to understand how well our model performs:
+
+```{r, echo=FALSE, out.width='70%'}
+best.svm.radial <- cv.svm.radial$best.model
+
+# predictions.radial <- predict(best.svm.radial, newdata = test) %>% unlist()
+
+# confusion.matrix.radial <- confusionMatrix(data = predictions.radial, reference = test.mnist.dat$label)
+
+plot_cm_stats(confusion.matrix.radial)
+```
+
+
+From above, we can infer that our model performed quite well with an overall accuracy of around 89%. Sensitivity and specificity metrics also indicate a good class-wise performance by our model.
+
+
+##### Results for linear:
+
+Confusion Matrix on Test set:
+
+```{r, echo=FALSE, out.width='70%'}
+best.svm.linear <- cv.svm.linear$best.model
+
+# predictions.linear <- predict(best.svm.linear, newdata = test) %>% unlist()
+
+# confusion.matrix.linear <- confusionMatrix(data = predictions.linear, reference = test.mnist.dat$label)
+
+plot_cm_stats(confusion.matrix.linear)
+```
+
+The overall accuracy of the linear SVM model was approximately 90%. The specificity and sensitivity scores also indicate a good performance across different classes.
+
+##### Results for Polynomial:
+
+Below is the confusion matrix for SVM with polynomial kernel function:
+
+```{r, echo=FALSE, out.width='70%'}
+best.svm.polynomial <- cv.svm.polynomial$best.model
+
+# predictions.polynomial <- predict(best.svm.polynomial, newdata = test) %>% unlist()
+
+# confusion.matrix.polynomial <- confusionMatrix(data = predictions.polynomial, reference = test.mnist.dat$label)
+
+plot_cm_stats(confusion.matrix.polynomial)
+```
+
+The model performed exceedingly well when compared to previous models achieving an overall accuracy rate of about 95%. This underlines how changing the kernel function in SVM can significantly impact model performance.
+
+## 4-Conclusion:
+
+In this investigation of the MNIST dataset through various machine learning techniques, we aimed to develop models that could accurately predict handwritten digits from their pixel representations. Our exploration spanned from basic feature engineering to more sophisticated regularization and support vector machines.
+
+Upon delving into more advanced methodologies, it became evident that both LASSO-regularized multinomial logistic regression and SVM with different kernels significantly outperformed our initial logistic models. Regularization introduced an approach to feature selection, thereby improving prediction performance without overfitting, while SVMs take advanage of kernel tricks to project data into higher dimensions where classes are more easily separable.
+
+The best-performing model emerged from the use of an SVM with a polynomial kernel achieving an accuracy rate of approximately 95%. To statistically validate these observations, we perform hypothesis testing on accuracies obtained from the two top-performing models: LASSO-regularized logistic regression and polynomial-kernel SVM, to ascertain if differences in their performances are indeed significant beyond random chance variations. We so tested the significance with McNemar's test, given that the models are tested on the same set of instances, with null hypothesis that there is no difference between the two models:
+
+```{r echo=FALSE}
+predictions_model_1 <- prediction.multi.logit.min # Predictions from logit with min error
+predictions_model_2 <-  predictions.polynomial # Predictions from svm with polynomial kernel
+actual_labels <-  test.mnist.dat$label
+
+# Construct a contingency table
+tab <- table(predictions_model_1 == actual_labels,
+             predictions_model_2 == actual_labels)
+
+# Perform McNemar's test
+mcnemar_test_result <- mcnemar.test(tab)
+print(mcnemar_test_result)
+```
+
+Given the McNemar's chi-squared test has a very large statistic and the p-value is therefore very small, we will reject the null-hypothesis of the two models predicting at the same accuracy. We can therefore conclude that the model: polynomial-kernel SVM scores the best in our analysis. However, this model is still imperfect, as it can predict with an accuracy of ~95%. For future research, we recommend to apply different neural networks on this data set to see if the model can further improve. 
