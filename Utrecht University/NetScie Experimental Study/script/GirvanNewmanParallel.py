@@ -165,7 +165,7 @@ def runGirvanNewmanWithSizes(G, Orig_deg, m_, target_clusters, save_folder, num_
     return cluster_snapshots
 
 
-## Usage: python OH_PIN_Final.py <input graph.txt.gz> <num_cores>
+## Usage: python GirvanNewmanParallel.py <input graph.txt.gz> <num_cores>
 def main(argv):
     if len(argv) < 3:
         sys.stderr.write("Usage: %s <input graph> <num_cores>\n" % (argv[0],))
