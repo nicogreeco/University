@@ -21,8 +21,8 @@ This GitHub repository contains all the materials used in the experimental proje
 ##### Running Scripts
 Execute clustering algorithms:
 ```bash
-python scripts/OH_PIN_Final.py data/your_graph_file.txt.gz
-python scripts/GirvanNewmanParallel.py data/your_graph_file.txt.gz <num_cores>
+python scripts/OH_PIN_Final.py data/511145.protein.physical.links.v12.0.txt.gz
+python scripts/GirvanNewmanParallel.py data/511145.protein.physical.links.v12.0.txt.gz <num_cores>
 ```
 ##### Running Jupiter Notebook
 You can clone this repository and run the Results_Notebook.ipynb to reproduce the analysis we did for our project and repordice the report figures and tables
