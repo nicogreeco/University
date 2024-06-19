@@ -3,6 +3,10 @@ import gzip
 import json
 import numpy as np
 import datetime
+from itertools import combinations
+import sys
+import os
+import heapq
 
 def count_edges(adj_matrix):
     edge_count = sum(sum(row) for row in adj_matrix)
@@ -90,9 +94,6 @@ def initialize_M_clusters_3(adj_matrix):
 
 # Step 2
 
-from concurrent.futures import ProcessPoolExecutor, as_completed
-from itertools import combinations
-
 ## Calculate the overlapping score OS between two clusters, optimized to use precomputed sizes.
 def overlapping_score(cluster1, cluster2):
 
@@ -100,53 +101,56 @@ def overlapping_score(cluster1, cluster2):
     return (intersection_size ** 2) / (len(cluster1) * len(cluster2))
 
 ## Optimizes the merging of clusters by reducing the number of set operations and improving the merge loop logic.
-def merge_clusters_3(C_set, os_threshold=0.5):
-
-    from itertools import combinations
-
+def merge_clusters_4(C_set, os_threshold=0.5):
     # Initial score calculation for all pairs
-    scores = []
+    scores_heap = []
     for cluster1, cluster2 in combinations(C_set, 2):
         score = overlapping_score(cluster1, cluster2)
         if score > os_threshold:
-            scores.append((score, cluster1, cluster2))
+            # Push scores as negative to create a max-heap using heapq which is by default a min-heap
+            heapq.heappush(scores_heap, (-score, cluster1, cluster2))
 
-    while scores:
-        # Sort and find the pair with the highest score
-        scores.sort(reverse=True, key=lambda x: x[0])
-        max_score, cluster1, cluster2 = scores.pop(0)
+    while scores_heap:
+        # Pop the pair with the highest score
+        max_score, cluster1, cluster2 = heapq.heappop(scores_heap)
+        max_score = -max_score  # Convert back to positive score
         print(f'current max score: {max_score}' )
+
         # Merge the two clusters with the highest score
         merged_cluster = cluster1 | cluster2
         new_C_set = [cluster for cluster in C_set if cluster != cluster1 and cluster != cluster2]
         new_C_set.append(merged_cluster)
 
-        # Update the scores list: remove scores involving the merged clusters and add new scores with the new merged cluster
-        scores = [score for score in scores if cluster1 not in score and cluster2 not in score]
+        # Update the scores heap: remove scores involving the merged clusters
+        new_scores_heap = []
+        for score, c1, c2 in scores_heap:
+            if c1 != cluster1 and c1 != cluster2 and c2 != cluster1 and c2 != cluster2:
+                new_scores_heap.append((score, c1, c2))
+        scores_heap = new_scores_heap  # Reassign the filtered heap
+
+        # Recreate the heap since the structure might be destroyed
+        heapq.heapify(scores_heap)
 
         # Calculate scores for the new merged cluster with all other clusters
         for cluster in new_C_set[:-1]:  # Exclude the newly added merged cluster itself
             new_score = overlapping_score(merged_cluster, cluster)
             if new_score > os_threshold:
-                scores.append((new_score, merged_cluster, cluster))
+                heapq.heappush(scores_heap, (-new_score, merged_cluster, cluster))
 
         C_set = new_C_set
 
-        if not scores:
+        if not scores_heap:
             break
 
     return C_set
 
-
 # Step 3
-
 
 def set_default(obj):
     if isinstance(obj, set):
         return list(obj)
     raise TypeError
 
-import numpy as np
 
 def weighted_clustering_coefficient_3(adj_matrix, cluster1, cluster2, neighbors):
 
@@ -171,53 +175,58 @@ def calculate_lambda_C_3(adj_matrix, cluster):
     return 0.0 if external_edges == 0 else internal_edges / external_edges
 
 ## Final hierarchial Step
-def assemble_into_lambda_modules_3(id, adj_matrix, C_list, lambda_thresholds, index_node):
+def assemble_into_lambda_modules_4(id, adj_matrix, C_list, lambda_thresholds, index_node):
     adj_matrix = np.array(adj_matrix)
     clusters = {i: set(clust) for i, clust in enumerate(C_list)}
     neighbors = {i: set(np.nonzero(adj_matrix[i])[0]) for i in range(len(adj_matrix))}
-    # find the min lambda:
-    min_lambda=0.1
-    for i in clusters.keys():
-        lambda_i=calculate_lambda_C_3(adj_matrix, clusters[i])
-        if lambda_i < min_lambda:
-            min_lambda=lambda_i
-    print(f'Minimum lambda is {min_lambda}') 
-    clusters_list=[list(v) for v in clusters.values()]
-    clusters_list_names=convert_index_sets_to_node_sets(clusters_list, index_node)
-    json_data = json.dumps(clusters_list_names, default=set_default)
-    with open(f'./{id}_clustering/new_OHPIN_clusters_min_lambda_{min_lambda}.json', 'w') as json_file:
-            json_file.write(json_data)         
-    print(f'Lambda values are {lambda_thresholds}')   
+    
+    # Initialize lambda values for each cluster
+    lambda_values = {i: calculate_lambda_C_3(adj_matrix, clust) for i, clust in clusters.items()}
+
+    print(f'Lambda values are {lambda_thresholds}')
     for lambda_th in lambda_thresholds:
         CCV = {(i, j): weighted_clustering_coefficient_3(adj_matrix, clusters[i], clusters[j], neighbors)
                for i in clusters for j in clusters if i < j}
-        
-        while any(value > 0 for value in CCV.values()):
-            max_pair = max(CCV, key=CCV.get)
+
+        # Initialize max-heap
+        heap = [(-val, key) for key, val in CCV.items()]
+        heapq.heapify(heap)
+
+        while heap and -heap[0][0] > 0:
+            max_val, max_pair = heapq.heappop(heap)
+            max_val = -max_val  # Convert back to positive value
             i, j = max_pair
-            if calculate_lambda_C_3(adj_matrix, clusters[i]) >= lambda_th and calculate_lambda_C_3(adj_matrix, clusters[j]) >= lambda_th:
+            if CCV.get((i, j), -1) == -1:
+                continue  # Skip if already processed
+            if lambda_values[i] >= lambda_th and lambda_values[j] >= lambda_th:
                 CCV[max_pair] = -1  # Mark as processed
-                print(f'Max clustering coeff: {CCV[max_pair]}, Clusters: {i} and {j} lambdas >= {lambda_th}', flush=True)
+                print(f'Clusters: {i} and {j} lambdas >= {lambda_th}', flush=True)
             else:
-                print(f'Max clustering coeff: {CCV[max_pair]}, clusters: {i} and {j}', flush=True)
+                print(f'Max clustering coeff: {max_val}, clusters: {i} and {j} merged', flush=True)
                 clusters[i].update(clusters[j])  # Merge clusters
+                lambda_values[i] = calculate_lambda_C_3(adj_matrix, clusters[i])  # Update lambda value for the new merged cluster
                 del clusters[j]  # Remove merged cluster
+                del lambda_values[j]  # Remove lambda value for the removed cluster
                 CCV = {key: val for key, val in CCV.items() if j not in key}
                 for k in list(clusters):
                     if k != i:
                         if clusters[k] <= clusters[i]:
                             del clusters[k]
+                            del lambda_values[k]  # Also remove lambda value for deleted cluster
                             CCV = {key: val for key, val in CCV.items() if k not in key}
                         else:
-                            CCV[tuple(sorted((i, k)))] = weighted_clustering_coefficient_3(adj_matrix, clusters[i], clusters[k], neighbors)
-        
+                            new_key = tuple(sorted((i, k)))
+                            new_val = weighted_clustering_coefficient_3(adj_matrix, clusters[i], clusters[k], neighbors)
+                            CCV[new_key] = new_val
+                            heapq.heappush(heap, (-new_val, new_key))  # Push new value to max-heap
+
         print(f'Lambda threshold: {lambda_th}, number of clusters: {len(clusters)}')
 
         # Save to JSON file
-        clusters_list=[list(v) for v in clusters.values()]
-        clusters_list_names=convert_index_sets_to_node_sets(clusters_list, index_node)
+        clusters_list = [list(v) for v in clusters.values()]
+        clusters_list_names = convert_index_sets_to_node_sets(clusters_list, index_node)
         json_data = json.dumps(clusters_list_names, default=set_default)
-        with open(f'./{id}_clustering/new_OHPIN_clusters_{lambda_th}.json', 'w') as json_file:
+        with open(f'./{id}_new_OHPIN_clusters_{lambda_th}.json', 'w') as json_file:
             json_file.write(json_data)
 
     return [list(v) for v in clusters.values()]
@@ -229,19 +238,16 @@ def assemble_into_lambda_modules_3(id, adj_matrix, C_list, lambda_thresholds, in
 def OH_PIN(id, graph, lambda_thresholds, index_node, os_threshold=0.5):
     M_clusters = initialize_M_clusters_3(graph)
     print(f'Step 1 completed, {len(M_clusters)} M clusters', flush=True)
-    C_set=merge_clusters_3(M_clusters, os_threshold=os_threshold)
+    C_set=merge_clusters_4(M_clusters, os_threshold=os_threshold)
     print(f'Step 2 completed, {len(C_set)} non overlapping (%50) clusters', flush=True)
-    C_set=assemble_into_lambda_modules_3(id, graph, C_set, lambda_thresholds=lambda_thresholds, index_node=index_node)
+    C_set=assemble_into_lambda_modules_4(id, graph, C_set, lambda_thresholds=lambda_thresholds, index_node=index_node)
     return(C_set)
 
 # Main
-import sys
-import os
-
 
 ## Usage: python OH_PIN_Final.py <input graph.txt.gz>
 def main(argv):
-    if len(argv) < 1:
+    if len(argv) < 2:
         sys.stderr.write("Usage: %s <input graph>" % (argv[0],))
         return 1
     graph_path = argv[1]   
@@ -251,7 +257,7 @@ def main(argv):
     print(f'The graph has {len(adj_matrix)} nodes and {count_edges(adj_matrix)} edges', flush=True)
     print(f'Starting the clustering', flush=True)
     id=os.path.basename(graph_path).split('.')[0]
-    C_set=OH_PIN(id, adj_matrix, lambda_thresholds=[0.10, 0.25, 0.5, 1, 1.5, 2.5, 4.5], index_node=index_node)
+    C_set=OH_PIN(id, adj_matrix, lambda_thresholds=[0.05, 0.1, 0.2, 0.4, 1], index_node=index_node)
     print(f'Total number of clusters: {len(C_set)}')
     print(datetime.datetime.now())
     

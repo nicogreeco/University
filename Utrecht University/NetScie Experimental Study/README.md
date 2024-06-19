@@ -24,5 +24,11 @@ Execute clustering algorithms:
 python scripts/OH_PIN_Final.py data/511145.protein.physical.links.v12.0.txt.gz
 python scripts/GirvanNewmanParallel.py data/511145.protein.physical.links.v12.0.txt.gz <num_cores>
 ```
+
 ##### Running Jupiter Notebook
-You can clone this repository and run the Results_Notebook.ipynb to reproduce the analysis we did for our project and repordice the report figures and tables
+You can clone this repository and run the Results_Notebook.ipynb to reproduce the analysis we did for our project and repordice the report figures and tables. To run the scripts and the Jupyter notebook, you need the following Python packages:
+- `networkx`
+- `pandas`
+- `matplotlib`
+- `seaborn`
+- `numpy`
