@@ -19,7 +19,7 @@ This GitHub repository contains all the materials used in the experimental proje
 
 
 ##### Running Scripts
-You can execute the clustering algorithms we implemented or modified in our study:
+You can execute the clustering algorithms we implemented in our study:
 ```bash
 python scripts/OH_PIN_Final.py data/511145.protein.physical.links.v12.0.txt.gz
 python scripts/GirvanNewmanParallel.py data/511145.protein.physical.links.v12.0.txt.gz <num_cores>
